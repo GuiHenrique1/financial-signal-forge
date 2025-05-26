@@ -1,0 +1,67 @@
+
+version: '3.8'
+
+services:
+  trading-api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - OANDA_API_KEY=${OANDA_API_KEY}
+      - OANDA_ACCOUNT_ID=${OANDA_ACCOUNT_ID}
+      - OANDA_ENVIRONMENT=${OANDA_ENVIRONMENT:-practice}
+      - CURRENCY_PAIR=${CURRENCY_PAIR:-EUR_USD}
+      - TIMEFRAME=${TIMEFRAME:-M5}
+      - DATA_FETCH_INTERVAL=${DATA_FETCH_INTERVAL:-300}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - SIGNAL_CHAT_ID=${SIGNAL_CHAT_ID}
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  telegram-bot:
+    build: .
+    command: ["python", "telegram_bot.py"]
+    environment:
+      - OANDA_API_KEY=${OANDA_API_KEY}
+      - OANDA_ACCOUNT_ID=${OANDA_ACCOUNT_ID}
+      - OANDA_ENVIRONMENT=${OANDA_ENVIRONMENT:-practice}
+      - CURRENCY_PAIR=${CURRENCY_PAIR:-EUR_USD}
+      - TIMEFRAME=${TIMEFRAME:-M5}
+      - DATA_FETCH_INTERVAL=${DATA_FETCH_INTERVAL:-300}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - SIGNAL_CHAT_ID=${SIGNAL_CHAT_ID}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    depends_on:
+      - trading-api
+
+  # Optional: Add a reverse proxy
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - trading-api
+    restart: unless-stopped
+    profiles:
+      - production
+
+volumes:
+  logs:
+    driver: local
