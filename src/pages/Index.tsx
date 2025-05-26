@@ -1,19 +1,25 @@
 
-import { useState, useEffect } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Separator } from '@/components/ui/separator';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { TrendingUp, TrendingDown, Activity, Clock, AlertCircle, BarChart3, Calculator, Target, DollarSign } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { Separator } from "@/components/ui/separator";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Progress } from "@/components/ui/progress";
+import { useToast } from "@/hooks/use-toast";
+import { RefreshCw, TrendingUp, TrendingDown, DollarSign, Target, Shield, Clock, Activity } from "lucide-react";
 
-interface TradingSignal {
+interface Signal {
   id: string;
   pair: string;
   timeframe: string;
   direction: 'BUY' | 'SELL';
   strength: number;
-  reasons: string[];
   entry_price: number;
   stop_loss: number;
   take_profit_1: number;
@@ -23,427 +29,675 @@ interface TradingSignal {
   risk_reward_2: number;
   risk_reward_3: number;
   timestamp: string;
-  current_price: number;
-  indicators: {
-    rsi: number;
-    macd: number;
-    macd_signal: number;
-    macd_hist: number;
-    sma_fast: number;
-    sma_slow: number;
-    atr: number;
+  reasons: string[];
+  mtf_confirmation: boolean;
+  mtf_confirmation_percentage: number;
+  session: string;
+  volatility_info: {
+    atr_percentile: number;
+    sufficient_volatility: boolean;
   };
-  status: string;
 }
 
-interface PositionSize {
-  lot_size?: number;
-  units?: number;
+interface PositionSizing {
+  account_balance: number;
+  risk_percent: number;
+  lot_size: number;
   risk_amount: number;
   max_loss: number;
-  position_value: number;
-  category: string;
 }
 
-const Index = () => {
-  const [activeSignals, setActiveSignals] = useState<TradingSignal[]>([]);
-  const [signalHistory, setSignalHistory] = useState<TradingSignal[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [lastUpdate, setLastUpdate] = useState<string>('');
-  const [accountBalance, setAccountBalance] = useState<number>(1000);
-  const [riskPercent, setRiskPercent] = useState<number>(1);
-  const [selectedPair, setSelectedPair] = useState<string>('all');
-  const [selectedTimeframe, setSelectedTimeframe] = useState<string>('all');
+interface PerformanceMetrics {
+  total_trades: number;
+  win_rate: number;
+  total_profit: number;
+  profit_factor: number;
+  max_drawdown: number;
+}
 
-  // Simulated data for demonstration
-  const mockSignals: TradingSignal[] = [
-    {
-      id: 'EUR_USD_H4_1640995200',
-      pair: 'EUR_USD',
-      timeframe: 'H4',
-      direction: 'BUY',
-      strength: 0.75,
-      reasons: ['RSI oversold recovery', 'MACD bullish crossover', 'Golden Cross + price above MAs'],
-      entry_price: 1.0850,
-      stop_loss: 1.0810,
-      take_profit_1: 1.0890,
-      take_profit_2: 1.0930,
-      take_profit_3: 1.0970,
+const TradingSignalDashboard = () => {
+  const [signals, setSignals] = useState<Signal[]>([]);
+  const [activeSignals, setActiveSignals] = useState<Signal[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected' | 'error'>('disconnected');
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [selectedPairs, setSelectedPairs] = useState<string[]>(['EUR_USD', 'GBP_USD', 'USD_JPY']);
+  const [selectedTimeframes, setSelectedTimeframes] = useState<string[]>(['H1', 'H4', 'D1']);
+  const [performanceMetrics, setPerformanceMetrics] = useState<PerformanceMetrics | null>(null);
+  
+  // Position sizing calculator
+  const [accountBalance, setAccountBalance] = useState<number>(10000);
+  const [riskPercent, setRiskPercent] = useState<number>(1.0);
+  const [selectedSignal, setSelectedSignal] = useState<Signal | null>(null);
+  const [positionSizing, setPositionSizing] = useState<PositionSizing | null>(null);
+  
+  // Filters
+  const [minSignalStrength, setMinSignalStrength] = useState<number>(60);
+  const [requireMTFConfirmation, setRequireMTFConfirmation] = useState<boolean>(true);
+  const [sessionFiltering, setSessionFiltering] = useState<boolean>(true);
+  
+  const { toast } = useToast();
+
+  // Available pairs and timeframes
+  const availablePairs = [
+    'EUR_USD', 'GBP_USD', 'USD_JPY', 'AUD_USD', 'NZD_USD', 'USD_CHF', 'USD_CAD',
+    'EUR_JPY', 'GBP_JPY', 'AUD_JPY', 'NZD_JPY', 'CHF_JPY', 'CAD_JPY',
+    'EUR_GBP', 'EUR_CHF', 'EUR_CAD', 'EUR_AUD', 'GBP_CHF', 'GBP_CAD',
+    'XAU_USD', 'XAG_USD', 'WTICO_USD', 'BTC_USD', 'ETH_USD'
+  ];
+  
+  const availableTimeframes = ['M15', 'M30', 'H1', 'H4', 'D1', 'W1'];
+
+  // Demo data for development
+  const generateDemoSignal = (): Signal => {
+    const pairs = selectedPairs.length > 0 ? selectedPairs : ['EUR_USD', 'GBP_USD', 'USD_JPY'];
+    const timeframes = selectedTimeframes.length > 0 ? selectedTimeframes : ['H1', 'H4', 'D1'];
+    const directions: ('BUY' | 'SELL')[] = ['BUY', 'SELL'];
+    
+    const pair = pairs[Math.floor(Math.random() * pairs.length)];
+    const timeframe = timeframes[Math.floor(Math.random() * timeframes.length)];
+    const direction = directions[Math.floor(Math.random() * directions.length)];
+    const strength = 60 + Math.random() * 40; // 60-100%
+    
+    const basePrice = pair.includes('JPY') ? 140 + Math.random() * 20 : 1.0 + Math.random() * 0.2;
+    const pipValue = pair.includes('JPY') ? 0.01 : 0.0001;
+    const spread = 10 + Math.random() * 20; // 10-30 pips
+    
+    const entry_price = basePrice;
+    const stop_loss = direction === 'BUY' 
+      ? entry_price - (spread * pipValue)
+      : entry_price + (spread * pipValue);
+    
+    const risk = Math.abs(entry_price - stop_loss);
+    const tp1 = direction === 'BUY' ? entry_price + risk : entry_price - risk;
+    const tp2 = direction === 'BUY' ? entry_price + (risk * 2) : entry_price - (risk * 2);
+    const tp3 = direction === 'BUY' ? entry_price + (risk * 3) : entry_price - (risk * 3);
+
+    return {
+      id: `signal_${Date.now()}_${Math.random()}`,
+      pair,
+      timeframe,
+      direction,
+      strength,
+      entry_price,
+      stop_loss,
+      take_profit_1: tp1,
+      take_profit_2: tp2,
+      take_profit_3: tp3,
       risk_reward_1: 1.0,
       risk_reward_2: 2.0,
       risk_reward_3: 3.0,
       timestamp: new Date().toISOString(),
-      current_price: 1.0850,
-      indicators: {
-        rsi: 32.5,
-        macd: 0.000123,
-        macd_signal: 0.000089,
-        macd_hist: 0.000034,
-        sma_fast: 1.0840,
-        sma_slow: 1.0820,
-        atr: 0.0025
-      },
-      status: 'ACTIVE'
-    },
-    {
-      id: 'GBP_USD_H1_1640995300',
-      pair: 'GBP_USD',
-      timeframe: 'H1',
-      direction: 'SELL',
-      strength: 0.68,
-      reasons: ['RSI overbought decline', 'MACD bearish crossover'],
-      entry_price: 1.3420,
-      stop_loss: 1.3460,
-      take_profit_1: 1.3380,
-      take_profit_2: 1.3340,
-      take_profit_3: 1.3300,
-      risk_reward_1: 1.0,
-      risk_reward_2: 2.0,
-      risk_reward_3: 3.0,
-      timestamp: new Date(Date.now() - 300000).toISOString(),
-      current_price: 1.3420,
-      indicators: {
-        rsi: 72.8,
-        macd: -0.000089,
-        macd_signal: 0.000034,
-        macd_hist: -0.000123,
-        sma_fast: 1.3430,
-        sma_slow: 1.3450,
-        atr: 0.0035
-      },
-      status: 'ACTIVE'
-    }
-  ];
+      reasons: [
+        'RSI oversold recovery',
+        'MACD bullish crossover',
+        'Price above key support'
+      ],
+      mtf_confirmation: Math.random() > 0.3,
+      mtf_confirmation_percentage: 60 + Math.random() * 40,
+      session: 'london',
+      volatility_info: {
+        atr_percentile: 30 + Math.random() * 50,
+        sufficient_volatility: true
+      }
+    };
+  };
 
   const fetchSignals = async () => {
-    setIsLoading(true);
+    setLoading(true);
     try {
-      // Simulated API call - replace with actual backend
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      setActiveSignals(mockSignals);
-      setSignalHistory([...mockSignals, ...mockSignals.map(s => ({ ...s, id: s.id + '_old', status: 'CLOSED' }))]);
-      setLastUpdate(new Date().toLocaleTimeString());
+      // For demo purposes, generate random signals
+      const newSignals = Array.from({ length: 3 + Math.floor(Math.random() * 5) }, generateDemoSignal);
+      
+      // Filter signals based on user preferences
+      const filteredSignals = newSignals.filter(signal => {
+        if (signal.strength < minSignalStrength) return false;
+        if (requireMTFConfirmation && !signal.mtf_confirmation) return false;
+        return true;
+      });
+      
+      setSignals(filteredSignals);
+      setActiveSignals(filteredSignals.slice(0, 3)); // Keep top 3 as active
+      setConnectionStatus('connected');
+      setLastUpdate(new Date());
+      
+      if (filteredSignals.length > 0) {
+        toast({
+          title: "Signals Updated",
+          description: `Found ${filteredSignals.length} new signals`,
+        });
+      }
     } catch (error) {
-      console.error('Error fetching signals:', error);
+      setConnectionStatus('error');
+      toast({
+        title: "Error",
+        description: "Failed to fetch signals",
+        variant: "destructive"
+      });
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
+  };
+
+  const calculatePositionSize = (signal: Signal) => {
+    if (!signal) return;
+    
+    const riskAmount = (accountBalance * riskPercent) / 100;
+    const pipDistance = Math.abs(signal.entry_price - signal.stop_loss);
+    const pipValue = signal.pair.includes('JPY') ? 0.01 : 0.0001;
+    const pips = pipDistance / pipValue;
+    
+    // Simplified lot calculation (would need proper pip value calculation per pair)
+    const lotSize = riskAmount / (pips * 10); // Assuming $10 per pip per lot
+    const maxLoss = lotSize * pips * 10;
+    
+    setPositionSizing({
+      account_balance: accountBalance,
+      risk_percent: riskPercent,
+      lot_size: Math.round(lotSize * 100) / 100,
+      risk_amount: riskAmount,
+      max_loss: maxLoss
+    });
   };
 
   useEffect(() => {
     fetchSignals();
-    const interval = setInterval(fetchSignals, 30000); // Update every 30 seconds
+    
+    // Auto-refresh every 30 seconds
+    const interval = setInterval(fetchSignals, 30000);
     return () => clearInterval(interval);
+  }, [selectedPairs, selectedTimeframes, minSignalStrength, requireMTFConfirmation]);
+
+  useEffect(() => {
+    if (selectedSignal) {
+      calculatePositionSize(selectedSignal);
+    }
+  }, [selectedSignal, accountBalance, riskPercent]);
+
+  // Generate demo performance metrics
+  useEffect(() => {
+    setPerformanceMetrics({
+      total_trades: 147,
+      win_rate: 68.5,
+      total_profit: 3250.00,
+      profit_factor: 1.85,
+      max_drawdown: 450.00
+    });
   }, []);
 
-  const calculatePositionSize = (signal: TradingSignal): PositionSize => {
-    const riskAmount = accountBalance * (riskPercent / 100);
-    const priceDistance = Math.abs(signal.entry_price - signal.stop_loss);
-    const pipValue = 10; // Simplified for forex pairs
-    const pipsDistance = priceDistance / 0.0001;
-    const lotSize = riskAmount / (pipsDistance * pipValue);
-    
-    return {
-      lot_size: parseFloat(lotSize.toFixed(3)),
-      risk_amount: riskAmount,
-      max_loss: parseFloat((lotSize * pipsDistance * pipValue).toFixed(2)),
-      position_value: parseFloat((lotSize * 100000 * signal.entry_price).toFixed(2)),
-      category: 'forex'
-    };
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'connected': return 'bg-green-500';
+      case 'error': return 'bg-red-500';
+      default: return 'bg-gray-500';
+    }
   };
 
-  const getSignalIcon = (direction: string) => {
+  const getDirectionIcon = (direction: string) => {
     return direction === 'BUY' ? 
-      <TrendingUp className="h-5 w-5 text-green-500" /> : 
-      <TrendingDown className="h-5 w-5 text-red-500" />;
+      <TrendingUp className="h-4 w-4 text-green-600" /> : 
+      <TrendingDown className="h-4 w-4 text-red-600" />;
   };
 
-  const getSignalColor = (direction: string) => {
-    return direction === 'BUY' ? 
-      'bg-green-100 text-green-800 border-green-200' : 
-      'bg-red-100 text-red-800 border-red-200';
+  const getDirectionColor = (direction: string) => {
+    return direction === 'BUY' ? 'text-green-600 bg-green-50' : 'text-red-600 bg-red-50';
   };
 
-  const filteredSignals = activeSignals.filter(signal => {
-    const pairMatch = selectedPair === 'all' || signal.pair === selectedPair;
-    const timeframeMatch = selectedTimeframe === 'all' || signal.timeframe === selectedTimeframe;
-    return pairMatch && timeframeMatch;
-  });
+  const formatPrice = (price: number, pair: string) => {
+    const decimals = pair.includes('JPY') ? 3 : 5;
+    return price.toFixed(decimals);
+  };
+
+  const formatTime = (timestamp: string) => {
+    return new Date(timestamp).toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
+    <div className="min-h-screen bg-gray-50 p-4">
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Header */}
-        <div className="text-center space-y-2">
-          <h1 className="text-4xl font-bold text-gray-900 flex items-center justify-center gap-3">
-            <BarChart3 className="h-10 w-10 text-blue-600" />
-            Professional Trading Signals
-          </h1>
-          <p className="text-xl text-gray-600">Sistema Avançado de Sinais Forex, Cripto e Commodities</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">Trading Signal Dashboard</h1>
+            <p className="text-gray-600">Professional Forex, Crypto & Commodities Analysis</p>
+          </div>
+          
+          <div className="flex items-center space-x-4">
+            <div className="flex items-center space-x-2">
+              <div className={`w-3 h-3 rounded-full ${getStatusColor(connectionStatus)}`}></div>
+              <span className="text-sm text-gray-600">
+                {connectionStatus === 'connected' ? 'Live' : 'Disconnected'}
+              </span>
+            </div>
+            
+            {lastUpdate && (
+              <span className="text-sm text-gray-500">
+                Last update: {formatTime(lastUpdate.toISOString())}
+              </span>
+            )}
+            
+            <Button
+              onClick={fetchSignals}
+              disabled={loading}
+              variant="outline"
+              size="sm"
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+          </div>
         </div>
 
-        {/* Stats Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-gray-600">Sinais Ativos</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-blue-600">{activeSignals.length}</div>
-            </CardContent>
-          </Card>
+        {/* Performance Overview */}
+        {performanceMetrics && (
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+            <Card>
+              <CardContent className="p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-gray-600">Total Trades</p>
+                    <p className="text-2xl font-bold">{performanceMetrics.total_trades}</p>
+                  </div>
+                  <Activity className="h-6 w-6 text-blue-600" />
+                </div>
+              </CardContent>
+            </Card>
+            
+            <Card>
+              <CardContent className="p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-gray-600">Win Rate</p>
+                    <p className="text-2xl font-bold text-green-600">{performanceMetrics.win_rate}%</p>
+                  </div>
+                  <Target className="h-6 w-6 text-green-600" />
+                </div>
+              </CardContent>
+            </Card>
+            
+            <Card>
+              <CardContent className="p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-gray-600">Total Profit</p>
+                    <p className="text-2xl font-bold text-green-600">${performanceMetrics.total_profit}</p>
+                  </div>
+                  <DollarSign className="h-6 w-6 text-green-600" />
+                </div>
+              </CardContent>
+            </Card>
+            
+            <Card>
+              <CardContent className="p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-gray-600">Profit Factor</p>
+                    <p className="text-2xl font-bold">{performanceMetrics.profit_factor}</p>
+                  </div>
+                  <TrendingUp className="h-6 w-6 text-blue-600" />
+                </div>
+              </CardContent>
+            </Card>
+            
+            <Card>
+              <CardContent className="p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-gray-600">Max Drawdown</p>
+                    <p className="text-2xl font-bold text-red-600">${performanceMetrics.max_drawdown}</p>
+                  </div>
+                  <Shield className="h-6 w-6 text-red-600" />
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
 
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-gray-600">Força Média</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-green-600">
-                {activeSignals.length > 0 ? 
-                  `${Math.round(activeSignals.reduce((acc, s) => acc + s.strength, 0) / activeSignals.length * 100)}%` : 
-                  '0%'
-                }
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-gray-600">Pares Monitorados</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-purple-600">7</div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-gray-600">Última Atualização</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center gap-2">
-                <Clock className="h-4 w-4 text-gray-500" />
-                <span className="text-sm">{lastUpdate || 'Aguardando...'}</span>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        <Tabs defaultValue="signals" className="w-full">
-          <TabsList className="grid w-full grid-cols-3">
-            <TabsTrigger value="signals">Sinais Ativos</TabsTrigger>
-            <TabsTrigger value="calculator">Calculadora</TabsTrigger>
-            <TabsTrigger value="history">Histórico</TabsTrigger>
+        <Tabs defaultValue="signals" className="space-y-6">
+          <TabsList className="grid w-full grid-cols-4">
+            <TabsTrigger value="signals">Active Signals</TabsTrigger>
+            <TabsTrigger value="calculator">Position Calculator</TabsTrigger>
+            <TabsTrigger value="settings">Settings</TabsTrigger>
+            <TabsTrigger value="performance">Performance</TabsTrigger>
           </TabsList>
 
+          {/* Active Signals Tab */}
           <TabsContent value="signals" className="space-y-4">
-            {/* Filters */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg">Filtros</CardTitle>
-              </CardHeader>
-              <CardContent className="flex gap-4">
-                <div>
-                  <label className="text-sm font-medium">Par:</label>
-                  <select 
-                    value={selectedPair} 
-                    onChange={(e) => setSelectedPair(e.target.value)}
-                    className="ml-2 border rounded px-2 py-1"
-                  >
-                    <option value="all">Todos</option>
-                    <option value="EUR_USD">EUR/USD</option>
-                    <option value="GBP_USD">GBP/USD</option>
-                    <option value="USD_JPY">USD/JPY</option>
-                    <option value="XAU_USD">XAU/USD</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="text-sm font-medium">Timeframe:</label>
-                  <select 
-                    value={selectedTimeframe} 
-                    onChange={(e) => setSelectedTimeframe(e.target.value)}
-                    className="ml-2 border rounded px-2 py-1"
-                  >
-                    <option value="all">Todos</option>
-                    <option value="H1">H1</option>
-                    <option value="H4">H4</option>
-                    <option value="D1">D1</option>
-                  </select>
-                </div>
-                <Button onClick={fetchSignals} disabled={isLoading} variant="outline">
-                  {isLoading ? 'Atualizando...' : 'Atualizar'}
-                </Button>
-              </CardContent>
-            </Card>
-
-            {/* Active Signals */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {filteredSignals.map((signal) => {
-                const positionSize = calculatePositionSize(signal);
-                return (
-                  <Card key={signal.id} className="shadow-lg">
-                    <CardHeader>
-                      <CardTitle className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          {getSignalIcon(signal.direction)}
-                          <span>{signal.pair.replace('_', '/')}</span>
-                          <Badge className={getSignalColor(signal.direction)}>
-                            {signal.direction}
-                          </Badge>
-                        </div>
-                        <Badge variant="outline">{signal.timeframe}</Badge>
-                      </CardTitle>
-                      <CardDescription>
-                        Força: {Math.round(signal.strength * 100)}% | {signal.reasons.join(', ')}
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <div className="text-sm font-medium text-gray-600">Entry</div>
-                          <div className="text-lg font-bold">{signal.entry_price}</div>
-                        </div>
-                        <div>
-                          <div className="text-sm font-medium text-gray-600">Stop Loss</div>
-                          <div className="text-lg font-bold text-red-600">{signal.stop_loss}</div>
-                        </div>
-                      </div>
-
-                      <Separator />
-
-                      <div>
-                        <div className="text-sm font-medium text-gray-600 mb-2">Take Profits</div>
-                        <div className="space-y-1">
-                          <div className="flex justify-between">
-                            <span className="text-sm">TP1:</span>
-                            <span className="font-medium">{signal.take_profit_1} (R:R 1:{signal.risk_reward_1})</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-sm">TP2:</span>
-                            <span className="font-medium">{signal.take_profit_2} (R:R 1:{signal.risk_reward_2})</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-sm">TP3:</span>
-                            <span className="font-medium">{signal.take_profit_3} (R:R 1:{signal.risk_reward_3})</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      <Separator />
-
-                      <div>
-                        <div className="text-sm font-medium text-gray-600 mb-2">Position Sizing ({riskPercent}% risk)</div>
-                        <div className="space-y-1">
-                          <div className="flex justify-between">
-                            <span className="text-sm">Lote:</span>
-                            <span className="font-medium">{positionSize.lot_size}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-sm">Risco Máximo:</span>
-                            <span className="font-medium text-red-600">${positionSize.max_loss}</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      <Separator />
-
-                      <div className="text-xs text-gray-500">
-                        Gerado: {new Date(signal.timestamp).toLocaleString()}
-                      </div>
-                    </CardContent>
-                  </Card>
-                );
-              })}
-            </div>
-
-            {filteredSignals.length === 0 && (
+            {activeSignals.length === 0 ? (
               <Card>
-                <CardContent className="text-center py-8">
-                  <AlertCircle className="h-8 w-8 text-gray-400 mx-auto mb-2" />
-                  <p className="text-gray-600">Nenhum sinal ativo encontrado</p>
+                <CardContent className="p-8 text-center">
+                  <p className="text-gray-500">No active signals at the moment</p>
+                  <Button onClick={fetchSignals} className="mt-4">
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                    Check for Signals
+                  </Button>
                 </CardContent>
               </Card>
-            )}
-          </TabsContent>
-
-          <TabsContent value="calculator" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Calculator className="h-5 w-5" />
-                  Calculadora de Position Sizing
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-sm font-medium">Saldo da Conta (USD)</label>
-                    <input
-                      type="number"
-                      value={accountBalance}
-                      onChange={(e) => setAccountBalance(Number(e.target.value))}
-                      className="w-full mt-1 border rounded px-3 py-2"
-                      min="100"
-                      step="100"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium">Risco (%)</label>
-                    <input
-                      type="number"
-                      value={riskPercent}
-                      onChange={(e) => setRiskPercent(Number(e.target.value))}
-                      className="w-full mt-1 border rounded px-3 py-2"
-                      min="0.1"
-                      max="5"
-                      step="0.1"
-                    />
-                  </div>
-                </div>
-                
-                <div className="bg-blue-50 p-4 rounded-lg">
-                  <h4 className="font-medium mb-2">Cenários de Risco</h4>
-                  <div className="grid grid-cols-3 gap-4 text-sm">
-                    <div>
-                      <div className="font-medium">1% Risco</div>
-                      <div>Risco: ${(accountBalance * 0.01).toFixed(2)}</div>
-                    </div>
-                    <div>
-                      <div className="font-medium">2% Risco</div>
-                      <div>Risco: ${(accountBalance * 0.02).toFixed(2)}</div>
-                    </div>
-                    <div>
-                      <div className="font-medium">3% Risco</div>
-                      <div>Risco: ${(accountBalance * 0.03).toFixed(2)}</div>
-                    </div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="history" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>Histórico de Sinais</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-2">
-                  {signalHistory.slice(0, 10).map((signal) => (
-                    <div key={signal.id} className="flex items-center justify-between py-2 border-b">
-                      <div className="flex items-center gap-3">
-                        {getSignalIcon(signal.direction)}
-                        <span className="font-medium">{signal.pair.replace('_', '/')}</span>
-                        <Badge variant="outline">{signal.timeframe}</Badge>
-                        <Badge className={getSignalColor(signal.direction)}>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
+                {activeSignals.map((signal) => (
+                  <Card key={signal.id} className="hover:shadow-lg transition-shadow">
+                    <CardHeader className="pb-3">
+                      <div className="flex items-center justify-between">
+                        <CardTitle className="text-lg flex items-center gap-2">
+                          {getDirectionIcon(signal.direction)}
+                          {signal.pair.replace('_', '/')}
+                        </CardTitle>
+                        <Badge variant={signal.direction === 'BUY' ? 'default' : 'destructive'}>
                           {signal.direction}
                         </Badge>
                       </div>
-                      <div className="text-sm text-gray-500">
-                        {new Date(signal.timestamp).toLocaleDateString()}
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-gray-600">{signal.timeframe}</span>
+                        <span className="text-gray-600">{formatTime(signal.timestamp)}</span>
+                      </div>
+                    </CardHeader>
+                    
+                    <CardContent className="space-y-4">
+                      {/* Signal Strength */}
+                      <div>
+                        <div className="flex justify-between text-sm mb-1">
+                          <span>Signal Strength</span>
+                          <span className="font-semibold">{signal.strength.toFixed(0)}%</span>
+                        </div>
+                        <Progress value={signal.strength} className="h-2" />
+                      </div>
+                      
+                      {/* MTF Confirmation */}
+                      {signal.mtf_confirmation && (
+                        <div>
+                          <div className="flex justify-between text-sm mb-1">
+                            <span>MTF Confirmation</span>
+                            <span className="font-semibold">{signal.mtf_confirmation_percentage.toFixed(0)}%</span>
+                          </div>
+                          <Progress value={signal.mtf_confirmation_percentage} className="h-2" />
+                        </div>
+                      )}
+
+                      {/* Price Levels */}
+                      <div className="space-y-2 text-sm">
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Entry:</span>
+                          <span className="font-mono font-semibold">{formatPrice(signal.entry_price, signal.pair)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Stop Loss:</span>
+                          <span className="font-mono text-red-600">{formatPrice(signal.stop_loss, signal.pair)}</span>
+                        </div>
+                        <Separator />
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">TP1 (1:1):</span>
+                          <span className="font-mono text-green-600">{formatPrice(signal.take_profit_1, signal.pair)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">TP2 (1:2):</span>
+                          <span className="font-mono text-green-600">{formatPrice(signal.take_profit_2, signal.pair)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">TP3 (1:3):</span>
+                          <span className="font-mono text-green-600">{formatPrice(signal.take_profit_3, signal.pair)}</span>
+                        </div>
+                      </div>
+
+                      {/* Signal Reasons */}
+                      <div className="pt-2">
+                        <p className="text-xs text-gray-600 mb-2">Analysis:</p>
+                        <div className="flex flex-wrap gap-1">
+                          {signal.reasons.slice(0, 2).map((reason, index) => (
+                            <Badge key={index} variant="outline" className="text-xs">
+                              {reason}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Action Button */}
+                      <Button
+                        onClick={() => setSelectedSignal(signal)}
+                        className="w-full"
+                        variant="outline"
+                      >
+                        Calculate Position Size
+                      </Button>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </TabsContent>
+
+          {/* Position Calculator Tab */}
+          <TabsContent value="calculator" className="space-y-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Calculator Inputs */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>Position Size Calculator</CardTitle>
+                  <CardDescription>
+                    Calculate optimal position size based on your risk management rules
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label htmlFor="balance">Account Balance ($)</Label>
+                      <Input
+                        id="balance"
+                        type="number"
+                        value={accountBalance}
+                        onChange={(e) => setAccountBalance(Number(e.target.value))}
+                        placeholder="10000"
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="risk">Risk Percentage (%)</Label>
+                      <Input
+                        id="risk"
+                        type="number"
+                        step="0.1"
+                        min="0.1"
+                        max="5"
+                        value={riskPercent}
+                        onChange={(e) => setRiskPercent(Number(e.target.value))}
+                        placeholder="1.0"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <Label>Select Signal</Label>
+                    <Select value={selectedSignal?.id || ''} onValueChange={(value) => {
+                      const signal = activeSignals.find(s => s.id === value);
+                      setSelectedSignal(signal || null);
+                    }}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Choose a signal to calculate position size" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {activeSignals.map((signal) => (
+                          <SelectItem key={signal.id} value={signal.id}>
+                            {signal.pair.replace('_', '/')} {signal.direction} ({signal.timeframe})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Calculator Results */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>Position Sizing Results</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {selectedSignal && positionSizing ? (
+                    <div className="space-y-4">
+                      <Alert>
+                        <Shield className="h-4 w-4" />
+                        <AlertDescription>
+                          <strong>{selectedSignal.pair.replace('_', '/')} {selectedSignal.direction}</strong>
+                          <br />
+                          Entry: {formatPrice(selectedSignal.entry_price, selectedSignal.pair)} | 
+                          SL: {formatPrice(selectedSignal.stop_loss, selectedSignal.pair)}
+                        </AlertDescription>
+                      </Alert>
+
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div className="p-3 bg-blue-50 rounded-lg">
+                          <p className="text-blue-600 font-semibold">Recommended Lot Size</p>
+                          <p className="text-2xl font-bold">{positionSizing.lot_size}</p>
+                        </div>
+                        <div className="p-3 bg-red-50 rounded-lg">
+                          <p className="text-red-600 font-semibold">Maximum Risk</p>
+                          <p className="text-2xl font-bold">${positionSizing.risk_amount.toFixed(2)}</p>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2 text-sm">
+                        <div className="flex justify-between">
+                          <span>Account Balance:</span>
+                          <span className="font-semibold">${positionSizing.account_balance.toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Risk Percentage:</span>
+                          <span className="font-semibold">{positionSizing.risk_percent}%</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Max Loss:</span>
+                          <span className="font-semibold text-red-600">${positionSizing.max_loss.toFixed(2)}</span>
+                        </div>
                       </div>
                     </div>
-                  ))}
+                  ) : (
+                    <p className="text-gray-500 text-center py-8">
+                      Select a signal and configure your account settings to calculate position size
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+
+          {/* Settings Tab */}
+          <TabsContent value="settings" className="space-y-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Asset Selection */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>Asset Selection</CardTitle>
+                  <CardDescription>Choose which pairs and timeframes to monitor</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div>
+                    <Label>Trading Pairs</Label>
+                    <div className="grid grid-cols-3 gap-2 mt-2">
+                      {availablePairs.map((pair) => (
+                        <label key={pair} className="flex items-center space-x-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={selectedPairs.includes(pair)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedPairs([...selectedPairs, pair]);
+                              } else {
+                                setSelectedPairs(selectedPairs.filter(p => p !== pair));
+                              }
+                            }}
+                            className="rounded"
+                          />
+                          <span>{pair.replace('_', '/')}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <Label>Timeframes</Label>
+                    <div className="grid grid-cols-3 gap-2 mt-2">
+                      {availableTimeframes.map((tf) => (
+                        <label key={tf} className="flex items-center space-x-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={selectedTimeframes.includes(tf)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedTimeframes([...selectedTimeframes, tf]);
+                              } else {
+                                setSelectedTimeframes(selectedTimeframes.filter(t => t !== tf));
+                              }
+                            }}
+                            className="rounded"
+                          />
+                          <span>{tf}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Signal Filters */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>Signal Filters</CardTitle>
+                  <CardDescription>Configure signal quality and confirmation requirements</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  <div>
+                    <Label>Minimum Signal Strength: {minSignalStrength}%</Label>
+                    <input
+                      type="range"
+                      min="50"
+                      max="90"
+                      value={minSignalStrength}
+                      onChange={(e) => setMinSignalStrength(Number(e.target.value))}
+                      className="w-full mt-2"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label>Require MTF Confirmation</Label>
+                      <p className="text-sm text-gray-600">Only show signals confirmed by higher timeframes</p>
+                    </div>
+                    <Switch
+                      checked={requireMTFConfirmation}
+                      onCheckedChange={setRequireMTFConfirmation}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label>Session Filtering</Label>
+                      <p className="text-sm text-gray-600">Filter signals based on trading sessions</p>
+                    </div>
+                    <Switch
+                      checked={sessionFiltering}
+                      onCheckedChange={setSessionFiltering}
+                    />
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+
+          {/* Performance Tab */}
+          <TabsContent value="performance" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Performance Analytics</CardTitle>
+                <CardDescription>Detailed trading performance analysis</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="text-center py-8">
+                  <p className="text-gray-500">Performance analytics will be available once you start trading with the signals.</p>
+                  <p className="text-sm text-gray-400 mt-2">
+                    This section will show win rates, profit factors, drawdown analysis, and more.
+                  </p>
                 </div>
               </CardContent>
             </Card>
@@ -454,4 +708,4 @@ const Index = () => {
   );
 };
 
-export default Index;
+export default TradingSignalDashboard;
