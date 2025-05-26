@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -146,8 +145,8 @@ const TradingSignalDashboard = () => {
   const fetchSignals = async () => {
     setLoading(true);
     try {
-      // For demo purposes, generate random signals
-      const newSignals = Array.from({ length: 3 + Math.floor(Math.random() * 5) }, generateDemoSignal);
+      // For demo purposes, generate random signals (8-12 signals instead of 3-5)
+      const newSignals = Array.from({ length: 8 + Math.floor(Math.random() * 5) }, generateDemoSignal);
       
       // Filter signals based on user preferences
       const filteredSignals = newSignals.filter(signal => {
@@ -157,7 +156,8 @@ const TradingSignalDashboard = () => {
       });
       
       setSignals(filteredSignals);
-      setActiveSignals(filteredSignals.slice(0, 3)); // Keep top 3 as active
+      // Show ALL filtered signals instead of just the top 3
+      setActiveSignals(filteredSignals);
       setConnectionStatus('connected');
       setLastUpdate(new Date());
       
@@ -377,94 +377,102 @@ const TradingSignalDashboard = () => {
                 </CardContent>
               </Card>
             ) : (
-              <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
-                {activeSignals.map((signal) => (
-                  <Card key={signal.id} className="hover:shadow-lg transition-shadow">
-                    <CardHeader className="pb-3">
-                      <div className="flex items-center justify-between">
-                        <CardTitle className="text-lg flex items-center gap-2">
-                          {getDirectionIcon(signal.direction)}
-                          {signal.pair.replace('_', '/')}
-                        </CardTitle>
-                        <Badge variant={signal.direction === 'BUY' ? 'default' : 'destructive'}>
-                          {signal.direction}
-                        </Badge>
-                      </div>
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-gray-600">{signal.timeframe}</span>
-                        <span className="text-gray-600">{formatTime(signal.timestamp)}</span>
-                      </div>
-                    </CardHeader>
-                    
-                    <CardContent className="space-y-4">
-                      {/* Signal Strength */}
-                      <div>
-                        <div className="flex justify-between text-sm mb-1">
-                          <span>Signal Strength</span>
-                          <span className="font-semibold">{signal.strength.toFixed(0)}%</span>
+              <div>
+                <div className="mb-4 flex items-center justify-between">
+                  <h3 className="text-lg font-semibold">Active Signals ({activeSignals.length})</h3>
+                  <Badge variant="outline">
+                    Showing all {activeSignals.length} signals
+                  </Badge>
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
+                  {activeSignals.map((signal) => (
+                    <Card key={signal.id} className="hover:shadow-lg transition-shadow">
+                      <CardHeader className="pb-3">
+                        <div className="flex items-center justify-between">
+                          <CardTitle className="text-lg flex items-center gap-2">
+                            {getDirectionIcon(signal.direction)}
+                            {signal.pair.replace('_', '/')}
+                          </CardTitle>
+                          <Badge variant={signal.direction === 'BUY' ? 'default' : 'destructive'}>
+                            {signal.direction}
+                          </Badge>
                         </div>
-                        <Progress value={signal.strength} className="h-2" />
-                      </div>
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-gray-600">{signal.timeframe}</span>
+                          <span className="text-gray-600">{formatTime(signal.timestamp)}</span>
+                        </div>
+                      </CardHeader>
                       
-                      {/* MTF Confirmation */}
-                      {signal.mtf_confirmation && (
+                      <CardContent className="space-y-4">
+                        {/* Signal Strength */}
                         <div>
                           <div className="flex justify-between text-sm mb-1">
-                            <span>MTF Confirmation</span>
-                            <span className="font-semibold">{signal.mtf_confirmation_percentage.toFixed(0)}%</span>
+                            <span>Signal Strength</span>
+                            <span className="font-semibold">{signal.strength.toFixed(0)}%</span>
                           </div>
-                          <Progress value={signal.mtf_confirmation_percentage} className="h-2" />
+                          <Progress value={signal.strength} className="h-2" />
                         </div>
-                      )}
+                        
+                        {/* MTF Confirmation */}
+                        {signal.mtf_confirmation && (
+                          <div>
+                            <div className="flex justify-between text-sm mb-1">
+                              <span>MTF Confirmation</span>
+                              <span className="font-semibold">{signal.mtf_confirmation_percentage.toFixed(0)}%</span>
+                            </div>
+                            <Progress value={signal.mtf_confirmation_percentage} className="h-2" />
+                          </div>
+                        )}
 
-                      {/* Price Levels */}
-                      <div className="space-y-2 text-sm">
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">Entry:</span>
-                          <span className="font-mono font-semibold">{formatPrice(signal.entry_price, signal.pair)}</span>
+                        {/* Price Levels */}
+                        <div className="space-y-2 text-sm">
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">Entry:</span>
+                            <span className="font-mono font-semibold">{formatPrice(signal.entry_price, signal.pair)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">Stop Loss:</span>
+                            <span className="font-mono text-red-600">{formatPrice(signal.stop_loss, signal.pair)}</span>
+                          </div>
+                          <Separator />
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">TP1 (1:1):</span>
+                            <span className="font-mono text-green-600">{formatPrice(signal.take_profit_1, signal.pair)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">TP2 (1:2):</span>
+                            <span className="font-mono text-green-600">{formatPrice(signal.take_profit_2, signal.pair)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">TP3 (1:3):</span>
+                            <span className="font-mono text-green-600">{formatPrice(signal.take_profit_3, signal.pair)}</span>
+                          </div>
                         </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">Stop Loss:</span>
-                          <span className="font-mono text-red-600">{formatPrice(signal.stop_loss, signal.pair)}</span>
-                        </div>
-                        <Separator />
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">TP1 (1:1):</span>
-                          <span className="font-mono text-green-600">{formatPrice(signal.take_profit_1, signal.pair)}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">TP2 (1:2):</span>
-                          <span className="font-mono text-green-600">{formatPrice(signal.take_profit_2, signal.pair)}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">TP3 (1:3):</span>
-                          <span className="font-mono text-green-600">{formatPrice(signal.take_profit_3, signal.pair)}</span>
-                        </div>
-                      </div>
 
-                      {/* Signal Reasons */}
-                      <div className="pt-2">
-                        <p className="text-xs text-gray-600 mb-2">Analysis:</p>
-                        <div className="flex flex-wrap gap-1">
-                          {signal.reasons.slice(0, 2).map((reason, index) => (
-                            <Badge key={index} variant="outline" className="text-xs">
-                              {reason}
-                            </Badge>
-                          ))}
+                        {/* Signal Reasons */}
+                        <div className="pt-2">
+                          <p className="text-xs text-gray-600 mb-2">Analysis:</p>
+                          <div className="flex flex-wrap gap-1">
+                            {signal.reasons.slice(0, 2).map((reason, index) => (
+                              <Badge key={index} variant="outline" className="text-xs">
+                                {reason}
+                              </Badge>
+                            ))}
+                          </div>
                         </div>
-                      </div>
 
-                      {/* Action Button */}
-                      <Button
-                        onClick={() => setSelectedSignal(signal)}
-                        className="w-full"
-                        variant="outline"
-                      >
-                        Calculate Position Size
-                      </Button>
-                    </CardContent>
-                  </Card>
-                ))}
+                        {/* Action Button */}
+                        <Button
+                          onClick={() => setSelectedSignal(signal)}
+                          className="w-full"
+                          variant="outline"
+                        >
+                          Calculate Position Size
+                        </Button>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
               </div>
             )}
           </TabsContent>
