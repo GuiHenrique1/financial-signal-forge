@@ -7,18 +7,24 @@ import { useEffect } from 'react';
 export const useSignals = () => {
   const { toast } = useToast();
   
-  return useQuery({
+  const query = useQuery({
     queryKey: ['signals'],
     queryFn: () => apiService.getSignals(),
     refetchInterval: 30000, // Refetch every 30 seconds
-    onError: (error) => {
+  });
+
+  // Handle errors using useEffect
+  useEffect(() => {
+    if (query.error) {
       toast({
         title: "Erro ao buscar sinais",
         description: "Usando dados offline como fallback",
         variant: "destructive"
       });
     }
-  });
+  }, [query.error, toast]);
+
+  return query;
 };
 
 export const useLatestSignal = () => {
