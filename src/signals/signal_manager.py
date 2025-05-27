@@ -5,9 +5,11 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict
 import json
+import pandas as pd
 from src.data.market_data_fetcher import market_data_fetcher
 from src.analysis.technical_analysis import technical_analysis
 from src.risk.risk_manager import risk_manager
+from src.filters.proximity_filter import proximity_filter
 from src.config.trading_config import TradingConfig
 
 logger = logging.getLogger(__name__)
@@ -34,6 +36,8 @@ class TradingSignal:
     indicators: Dict
     status: str = 'ACTIVE'
     created_at: datetime = None
+    distance_pips: float = 0.0
+    proximity_score: float = 0.0
     
     def __post_init__(self):
         if self.created_at is None:
@@ -48,11 +52,26 @@ class SignalManager:
         self.active_signals: Dict[str, TradingSignal] = {}
         self.signal_history: List[TradingSignal] = []
         self.last_signal_time: Dict[str, datetime] = {}
-        self.min_signal_interval = timedelta(minutes=15)  # Minimum time between signals for same pair-timeframe
+        self.min_signal_interval = timedelta(minutes=15)
+        self.max_pips_distance = float(TradingConfig.get_setting('MAX_PIPS_DISTANCE', 15.0))
+    
+    async def fetch_current_prices(self) -> Dict[str, float]:
+        """Fetch current prices for all monitored pairs"""
+        current_prices = {}
+        
+        for pair_symbol in TradingConfig.PAIRS.keys():
+            try:
+                price_data = await market_data_fetcher.get_current_price(pair_symbol)
+                if price_data:
+                    current_prices[pair_symbol] = price_data['mid']
+            except Exception as e:
+                logger.error(f"Error fetching current price for {pair_symbol}: {e}")
+        
+        return current_prices
     
     async def generate_all_signals(self) -> Dict[str, List[TradingSignal]]:
         """
-        Generate signals for all configured pairs and timeframes
+        Generate signals for all configured pairs and timeframes with proximity filtering
         
         Returns:
             Dictionary with structure: {pair: [signals]}
@@ -61,13 +80,15 @@ class SignalManager:
             # Fetch data for all pairs and timeframes
             all_data = await market_data_fetcher.fetch_all_pairs_data()
             
+            # Fetch current prices for proximity filtering
+            current_prices = await self.fetch_current_prices()
+            
             all_signals = {}
             new_signals = []
+            raw_signals_data = []
             
             # Generate signals for each pair and timeframe
             for pair_symbol, timeframe_data in all_data.items():
-                pair_signals = []
-                
                 for timeframe, df in timeframe_data.items():
                     if df is not None and len(df) > 0:
                         # Add technical indicators
@@ -79,27 +100,42 @@ class SignalManager:
                         )
                         
                         if signal_data:
-                            # Check if this is a new signal
-                            signal_key = f"{pair_symbol}_{timeframe}"
-                            
-                            if self._is_new_signal(signal_key, signal_data):
-                                # Create TradingSignal object
-                                signal = TradingSignal(
-                                    id=f"{pair_symbol}_{timeframe}_{int(datetime.now().timestamp())}",
-                                    **signal_data
-                                )
-                                
-                                pair_signals.append(signal)
-                                new_signals.append(signal)
-                                
-                                # Update tracking
-                                self.active_signals[signal_key] = signal
-                                self.last_signal_time[signal_key] = datetime.now()
-                                
-                                logger.info(f"New signal generated: {signal.pair} {signal.timeframe} {signal.direction}")
+                            raw_signals_data.append(signal_data)
+            
+            # Convert to DataFrame for filtering
+            if raw_signals_data:
+                signals_df = pd.DataFrame(raw_signals_data)
                 
-                if pair_signals:
-                    all_signals[pair_symbol] = pair_signals
+                # Apply proximity filter
+                filtered_signals_df = proximity_filter.filter_signals_by_proximity(
+                    signals_df, current_prices, self.max_pips_distance
+                )
+                
+                # Rank by proximity
+                filtered_signals_df = proximity_filter.rank_signals_by_proximity(filtered_signals_df)
+                
+                # Convert back to TradingSignal objects
+                for _, signal_row in filtered_signals_df.iterrows():
+                    signal_key = f"{signal_row['pair']}_{signal_row['timeframe']}"
+                    
+                    if self._is_new_signal(signal_key, signal_row.to_dict()):
+                        # Create TradingSignal object
+                        signal = TradingSignal(
+                            id=f"{signal_row['pair']}_{signal_row['timeframe']}_{int(datetime.now().timestamp())}",
+                            **signal_row.to_dict()
+                        )
+                        
+                        # Group by pair
+                        if signal.pair not in all_signals:
+                            all_signals[signal.pair] = []
+                        all_signals[signal.pair].append(signal)
+                        new_signals.append(signal)
+                        
+                        # Update tracking
+                        self.active_signals[signal_key] = signal
+                        self.last_signal_time[signal_key] = datetime.now()
+                        
+                        logger.info(f"New proximity-filtered signal: {signal.pair} {signal.timeframe} {signal.direction} (Distance: {signal.distance_pips} pips)")
             
             # Add new signals to history
             self.signal_history.extend(new_signals)
@@ -107,11 +143,15 @@ class SignalManager:
             # Clean up old signals
             self._cleanup_old_signals()
             
+            logger.info(f"Generated {len(new_signals)} proximity-filtered signals from {len(raw_signals_data)} raw signals")
+            
             return all_signals
             
         except Exception as e:
             logger.error(f"Error generating signals: {e}")
             return {}
+    
+    # ... keep existing code (other methods remain the same)
     
     def _is_new_signal(self, signal_key: str, signal_data: Dict) -> bool:
         """
@@ -146,8 +186,9 @@ class SignalManager:
         return True
     
     def get_active_signals(self) -> List[TradingSignal]:
-        """Get all active signals"""
-        return list(self.active_signals.values())
+        """Get all active signals sorted by proximity score"""
+        signals = list(self.active_signals.values())
+        return sorted(signals, key=lambda x: x.proximity_score, reverse=True)
     
     def get_signals_by_pair(self, pair: str) -> List[TradingSignal]:
         """Get active signals for a specific pair"""
@@ -198,7 +239,7 @@ class SignalManager:
     
     def format_signal_for_telegram(self, signal: TradingSignal, account_balance: float = None) -> str:
         """
-        Format signal for Telegram message
+        Format signal for Telegram message with proximity info
         
         Args:
             signal: TradingSignal object
@@ -208,13 +249,16 @@ class SignalManager:
             Formatted message string
         """
         direction_emoji = "🟢" if signal.direction == "BUY" else "🔴"
+        proximity_emoji = "🎯" if signal.distance_pips <= 5 else "📍"
         
         message = f"""
 {direction_emoji} **{signal.pair.replace('_', '/')} — {signal.direction}**
 
 🕐 **Timeframe:** {signal.timeframe}
 📊 **Força:** {signal.strength:.1%}
+{proximity_emoji} **Distância:** {signal.distance_pips} pips do preço atual
 ⭐ **Entry:** {signal.entry_price}
+💰 **Preço Atual:** {signal.current_price}
 🛑 **Stop Loss:** {signal.stop_loss}
 
 **Take Profits:**
@@ -242,7 +286,7 @@ class SignalManager:
         message += f"""
 ⏰ **Gerado:** {signal.timestamp.strftime('%d/%m %H:%M')}
 
-⚠️ *Analise antes de operar - Risco próprio*
+⚠️ *Sinais filtrados por proximidade - Apenas oportunidades relevantes*
         """
         
         return message.strip()
@@ -269,6 +313,8 @@ class SignalManager:
         data = {
             'active_signals': [asdict(signal) for signal in self.active_signals.values()],
             'signal_history': [asdict(signal) for signal in self.get_signal_history()],
+            'proximity_filter_enabled': True,
+            'max_pips_distance': self.max_pips_distance,
             'export_time': datetime.now().isoformat()
         }
         

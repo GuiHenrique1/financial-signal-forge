@@ -16,6 +16,9 @@ class Config:
     DATA_FETCH_INTERVAL = int(os.getenv('DATA_FETCH_INTERVAL', 300))
     MAX_CANDLES = int(os.getenv('MAX_CANDLES', 500))
     
+    # Proximity Filter
+    MAX_PIPS_DISTANCE = float(os.getenv('MAX_PIPS_DISTANCE', 15.0))
+    
     # Telegram
     TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
     SIGNAL_CHAT_ID = os.getenv('SIGNAL_CHAT_ID')
